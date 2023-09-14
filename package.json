@@ -1,0 +1,42 @@
+{
+  "name": "ttmobile-communication-notifications",
+  "version": "0.1.0",
+  "description": "Adds support for communication notifications",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "scripts": {
+    "build": "expo-module build",
+    "clean": "expo-module clean",
+    "lint": "expo-module lint",
+    "test": "expo-module test",
+    "prepare": "expo-module prepare",
+    "prepublishOnly": "expo-module prepublishOnly",
+    "expo-module": "expo-module",
+    "open:ios": "open -a \"Xcode\" example/ios",
+    "open:android": "open -a \"Android Studio\" example/android"
+  },
+  "keywords": [
+    "react-native",
+    "expo",
+    "ttmobile-communication-notifications",
+    "TtmobileCommunicationNotifications"
+  ],
+  "repository": "https://github.com/rikardwissing/ttmobile-communication-notifications",
+  "bugs": {
+    "url": "https://github.com/rikardwissing/ttmobile-communication-notifications/issues"
+  },
+  "author": "Rikard Wissing <rikard.wissing@teamtailor.com> (https://github.com/rikardwissing)",
+  "license": "MIT",
+  "homepage": "https://github.com/rikardwissing/ttmobile-communication-notifications#readme",
+  "dependencies": {},
+  "devDependencies": {
+    "@types/react": "^18.0.25",
+    "expo-module-scripts": "^3.0.11",
+    "expo-modules-core": "^1.5.7"
+  },
+  "peerDependencies": {
+    "expo": "*",
+    "react": "*",
+    "react-native": "*"
+  }
+}

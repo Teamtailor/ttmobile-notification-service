@@ -1,0 +1,9 @@
+{
+  "platforms": ["ios", "android", "web"],
+  "ios": {
+    "modules": ["TtmobileCommunicationNotificationsModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.ttmobilecommunicationnotifications.TtmobileCommunicationNotificationsModule"]
+  }
+}

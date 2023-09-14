@@ -1,0 +1,10 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "paths": {
+      "ttmobile-communication-notifications": ["../src/index"],
+      "ttmobile-communication-notifications/*": ["../src/*"]
+    }
+  }
+}
