@@ -5,7 +5,81 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const config_plugins_1 = require("@expo/config-plugins");
 const node_path_1 = __importDefault(require("node:path"));
+const promises_1 = __importDefault(require("node:fs/promises"));
 const withNotificationService = (config) => {
+    config = (0, config_plugins_1.withPlugins)(config, [
+        withIosNotificationService,
+        withFirebaseMessagingService,
+    ]);
+    return config;
+};
+// Android implementation
+const withFirebaseMessagingService = (config) => {
+    const packageName = config.android?.package || "com.teamtailor.app";
+    const props = {
+        packageName,
+    };
+    return (0, config_plugins_1.withPlugins)(config, [
+        [copyFirebaseMessagingService, props],
+        [modifyAndroidManifest, props],
+    ]);
+};
+const copyFirebaseMessagingService = (config, { packageName }) => {
+    return (0, config_plugins_1.withDangerousMod)(config, [
+        "android",
+        async (config) => {
+            const packagePath = packageName.replace(/\./g, node_path_1.default.sep);
+            const projectRoot = config.modRequest.projectRoot;
+            const srcDir = node_path_1.default.resolve(__dirname, "../../android");
+            const destDir = node_path_1.default.join(projectRoot, "android", "app", "src", "main", "java", packagePath);
+            // Ensure the destination directory exists
+            await promises_1.default.mkdir(destDir, { recursive: true });
+            // Copy TTFirebaseMessagingService.java
+            const srcFile = node_path_1.default.join(srcDir, "TTFirebaseMessagingService.java");
+            const destFile = node_path_1.default.join(destDir, "TTFirebaseMessagingService.java");
+            await promises_1.default.copyFile(srcFile, destFile);
+            return config;
+        },
+    ]);
+};
+const modifyAndroidManifest = (config, { packageName }) => {
+    return (0, config_plugins_1.withAndroidManifest)(config, async (config) => {
+        const manifest = config.modResults;
+        const application = manifest.manifest.application?.[0];
+        if (!application) {
+            throw new Error("AndroidManifest.xml is missing <application> element.");
+        }
+        // Ensure service array exists
+        if (!application.service) {
+            application.service = [];
+        }
+        // Check if the service is already declared
+        const serviceExists = application.service.some((service) => service.$["android:name"] ===
+            `${packageName}.TTFirebaseMessagingService`);
+        if (!serviceExists) {
+            application.service.push({
+                $: {
+                    "android:name": `${packageName}.TTFirebaseMessagingService`,
+                    "android:exported": "false",
+                },
+                "intent-filter": [
+                    {
+                        action: [
+                            {
+                                $: {
+                                    "android:name": "com.google.firebase.MESSAGING_EVENT",
+                                },
+                            },
+                        ],
+                    },
+                ],
+            });
+        }
+        return config;
+    });
+};
+// iOS implementation
+const withIosNotificationService = (config) => {
     const sanitizedName = config_plugins_1.IOSConfig.XcodeUtils.sanitizedName(config.name);
     const props = {
         bundleIdentifier: `${config.ios?.bundleIdentifier}.NotificationService`,

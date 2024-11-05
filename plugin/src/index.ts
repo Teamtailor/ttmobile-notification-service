@@ -5,10 +5,117 @@ import {
   withXcodeProject,
   withEntitlementsPlist,
   withInfoPlist,
+  withDangerousMod,
+  withAndroidManifest,
 } from "@expo/config-plugins";
 import path from "node:path";
+import fs from "node:fs/promises";
 
 const withNotificationService: ConfigPlugin = (config) => {
+  config = withPlugins(config, [
+    withIosNotificationService,
+    withFirebaseMessagingService,
+  ]);
+
+  return config;
+};
+
+// Android implementation
+const withFirebaseMessagingService: ConfigPlugin = (config) => {
+  const packageName = config.android?.package || "com.teamtailor.app";
+
+  const props = {
+    packageName,
+  };
+
+  return withPlugins(config, [
+    [copyFirebaseMessagingService, props],
+    [modifyAndroidManifest, props],
+  ]);
+};
+
+const copyFirebaseMessagingService: ConfigPlugin<{
+  packageName: string;
+}> = (config, { packageName }) => {
+  return withDangerousMod(config, [
+    "android",
+    async (config) => {
+      const packagePath = packageName.replace(/\./g, path.sep);
+      const projectRoot = config.modRequest.projectRoot;
+
+      const srcDir = path.resolve(__dirname, "../../android");
+      const destDir = path.join(
+        projectRoot,
+        "android",
+        "app",
+        "src",
+        "main",
+        "java",
+        packagePath
+      );
+
+      // Ensure the destination directory exists
+      await fs.mkdir(destDir, { recursive: true });
+
+      // Copy TTFirebaseMessagingService.java
+      const srcFile = path.join(srcDir, "TTFirebaseMessagingService.java");
+      const destFile = path.join(destDir, "TTFirebaseMessagingService.java");
+      await fs.copyFile(srcFile, destFile);
+
+      return config;
+    },
+  ]);
+};
+
+const modifyAndroidManifest: ConfigPlugin<{
+  packageName: string;
+}> = (config, { packageName }) => {
+  return withAndroidManifest(config, async (config) => {
+    const manifest = config.modResults;
+    const application = manifest.manifest.application?.[0];
+
+    if (!application) {
+      throw new Error("AndroidManifest.xml is missing <application> element.");
+    }
+
+    // Ensure service array exists
+    if (!application.service) {
+      application.service = [];
+    }
+
+    // Check if the service is already declared
+    const serviceExists = application.service.some(
+      (service) =>
+        service.$["android:name"] ===
+        `${packageName}.TTFirebaseMessagingService`
+    );
+
+    if (!serviceExists) {
+      application.service.push({
+        $: {
+          "android:name": `${packageName}.TTFirebaseMessagingService`,
+          "android:exported": "false",
+        },
+        "intent-filter": [
+          {
+            action: [
+              {
+                $: {
+                  "android:name": "com.google.firebase.MESSAGING_EVENT",
+                },
+              },
+            ],
+          },
+        ],
+      });
+    }
+
+    return config;
+  });
+};
+
+// iOS implementation
+const withIosNotificationService: ConfigPlugin = (config) => {
   const sanitizedName = IOSConfig.XcodeUtils.sanitizedName(config.name);
 
   const props = {
@@ -149,13 +256,12 @@ const withINSendMessageIntent: ConfigPlugin = (config) => {
   return withInfoPlist(config, async (newConfig) => {
     const infoPlist = newConfig.modResults;
 
-
-    if(!infoPlist["NSUserActivityTypes"]) {
-      infoPlist["NSUserActivityTypes"] = []
+    if (!infoPlist["NSUserActivityTypes"]) {
+      infoPlist["NSUserActivityTypes"] = [];
     }
 
-    let NSUserActivityTypes = infoPlist["NSUserActivityTypes"] as Array<String>
-    if(NSUserActivityTypes.indexOf("INSendMessageIntent") === -1) {
+    let NSUserActivityTypes = infoPlist["NSUserActivityTypes"] as Array<String>;
+    if (NSUserActivityTypes.indexOf("INSendMessageIntent") === -1) {
       NSUserActivityTypes.push("INSendMessageIntent");
     }
 
