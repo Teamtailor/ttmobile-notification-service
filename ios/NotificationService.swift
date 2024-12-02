@@ -5,34 +5,6 @@ class NotificationService: UNNotificationServiceExtension {
   var contentHandler: ((UNNotificationContent) -> Void)?
   var bestAttemptContent: UNMutableNotificationContent?
 
-  // KeyManager within the extension
-  class KeyManager {
-    static let shared = KeyManager()
-    private let tag = "com.yourcompany.yourapp.privatekey".data(using: .utf8)!
-    private let accessGroup = "group.com.yourcompany.yourapp" // Replace with your App Group
-
-    private init() {}
-
-    func getPrivateKey() -> SecKey? {
-      let query: [String: Any] = [
-        kSecClass as String: kSecClassKey,
-        kSecAttrApplicationTag as String: tag,
-        kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
-        kSecAttrAccessGroup as String: accessGroup,
-        kSecReturnRef as String: true,
-      ]
-
-      var item: CFTypeRef?
-      let status = SecItemCopyMatching(query as CFDictionary, &item)
-      if status == errSecSuccess {
-        return (item as! SecKey)
-      } else {
-        NSLog("Private key not found.")
-        return nil
-      }
-    }
-  }
-
   override func didReceive(_ request: UNNotificationRequest, withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
     self.contentHandler = contentHandler
     self.bestAttemptContent = (request.content.mutableCopy() as? UNMutableNotificationContent)
@@ -43,76 +15,45 @@ class NotificationService: UNNotificationServiceExtension {
       return
     }
 
-    // Log the contents of bestAttemptContent.userInfo
-    if let userInfoData = try? JSONSerialization.data(withJSONObject: bestAttemptContent.userInfo, options: .prettyPrinted),
-       let userInfoString = String(data: userInfoData, encoding: .utf8)
-    {
-      NSLog("bestAttemptContent.userInfo: \(userInfoString)")
-    } else {
-      NSLog("Failed to serialize bestAttemptContent.userInfo")
-    }
-
-    guard let decryptedJson = bestAttemptContent.userInfo["encrypted_data"] as? String else {
-      // No encrypted data, proceed as usual
+    guard let encryptedJson = bestAttemptContent.userInfo["encrypted_data"] as? String else {
       NSLog("No encrypted data, proceed as usual.")
       processNotificationContent(bestAttemptContent: bestAttemptContent, contentHandler: contentHandler)
       return
     }
 
-    bestAttemptContent.userInfo["encrypted_data"] = nil
-
-    NSLog("Decrypted JSON: \(decryptedJson)")
-
-    // Parse the decrypted JSON and replace userInfo
-    if let decryptedData = parseJsonToMap(jsonString: decryptedJson) {
-      mergeDecryptedData(decryptedData, into: bestAttemptContent)
-
-    // Log the contents of bestAttemptContent.userInfo
-    if let userInfoData = try? JSONSerialization.data(withJSONObject: bestAttemptContent.userInfo, options: .prettyPrinted),
-       let userInfoString = String(data: userInfoData, encoding: .utf8)
-    {
-      NSLog("bestAttemptContent.userInfo after merge: \(userInfoString)")
-    } else {
-      NSLog("Failed to serialize bestAttemptContent.userInfo")
+    guard let encryptedData = parseJsonToMap(jsonString: encryptedJson) else {
+      NSLog("Failed to parse encrypted data.")
+      processNotificationContent(bestAttemptContent: bestAttemptContent, contentHandler: contentHandler)
+      return
     }
 
-
-      // Now process the notification content with the merged userInfo
+    guard let encryptedKey = encryptedData["encrypted_key"] as? String,  // renamed from encrypted_key
+          let cipherText = encryptedData["cipher_text"] as? String,
+          let nonce = encryptedData["nonce"] as? String,
+          let tag = encryptedData["tag"] as? String else {
+      NSLog("Missing required encryption fields.")
       processNotificationContent(bestAttemptContent: bestAttemptContent, contentHandler: contentHandler)
-    } else {
-      // Parsing failed, proceed without modifications
-      processNotificationContent(bestAttemptContent: bestAttemptContent, contentHandler: contentHandler)
+      return
     }
 
-    /*
-     // Check if 'encrypted_data' exists in the payload
-     guard let encryptedDataBase64 = bestAttemptContent.userInfo["encrypted_data"] as? String else {
-       // No encrypted data, proceed as usual
-       self.processNotificationContent()
-       return
-     }
+    do {
+      let decryptedJson = try CryptoUtils.hybridDecrypt(
+        encryptedKey: encryptedKey,  // renamed parameter
+        cipherText: cipherText,
+        nonce: nonce,
+        tag: tag
+      )
+      
+      bestAttemptContent.userInfo["encrypted_data"] = nil
 
-     // Decrypt the encrypted data
-     decryptData(encryptedDataBase64: encryptedDataBase64) { decryptedJson in
-       guard let decryptedJson = decryptedJson else {
-         // Decryption failed, proceed without modifications
-         self.processNotificationContent()
-         return
-       }
+      if let decryptedData = parseJsonToMap(jsonString: decryptedJson) {
+        mergeDecryptedData(decryptedData, into: bestAttemptContent)
+      }
+    } catch {
+      NSLog("Decryption failed: \(error)")
+    }
 
-       // Parse the decrypted JSON and replace userInfo
-       if let decryptedData = self.parseJsonToMap(jsonString: decryptedJson) {
-         // Replace the entire userInfo with decryptedData
-         bestAttemptContent.userInfo = decryptedData as [AnyHashable: Any]
-
-         // Now process the notification content with the decrypted userInfo
-         self.processNotificationContent()
-       } else {
-         // Parsing failed, proceed without modifications
-         self.processNotificationContent()
-       }
-     }
-     */
+    processNotificationContent(bestAttemptContent: bestAttemptContent, contentHandler: contentHandler)
   }
 
   private func parseJsonToMap(jsonString: String) -> [String: Any]? {

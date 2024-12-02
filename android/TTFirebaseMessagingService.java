@@ -25,8 +25,6 @@ import org.json.JSONObject;
 public class TTFirebaseMessagingService extends ExpoFirebaseMessagingService {
 
     private static final String TAG = "TTFirebaseMessagingService";
-    private static final String KEY_ALIAS = "my_private_key_alias"; // Replace with your key alias
-    private static final String KEYSTORE_PROVIDER = "AndroidKeyStore";
 
     @Override
     public void onMessageReceived(RemoteMessage remoteMessage) {
@@ -38,9 +36,6 @@ public class TTFirebaseMessagingService extends ExpoFirebaseMessagingService {
             String decryptedDataString = originalData.get("encrypted_data");
 
             try {
-                // Decrypt the data
-                // String decryptedDataString = decryptData(encryptedData);
-
                 // Parse the decrypted JSON string into a Map
                 Map<String, String> decryptedData = parseJsonToMap(decryptedDataString);
 
@@ -79,46 +74,6 @@ public class TTFirebaseMessagingService extends ExpoFirebaseMessagingService {
             // If 'encrypted_data' is not present, pass the original message
             super.onMessageReceived(remoteMessage);
         }
-    }
-    
-    // Method to decrypt the encrypted data string
-    private String decryptData(String encryptedData) throws Exception {
-        // Get the private key from the KeyStore
-        PrivateKey privateKey = getPrivateKeyFromKeyStore();
-
-        if (privateKey == null) {
-            throw new Exception("Private key not found in KeyStore");
-        }
-
-        // Decrypt the data
-        byte[] encryptedBytes = android.util.Base64.decode(encryptedData, android.util.Base64.DEFAULT);
-
-        Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
-        cipher.init(Cipher.DECRYPT_MODE, privateKey);
-
-        byte[] decryptedBytes = cipher.doFinal(encryptedBytes);
-
-        return new String(decryptedBytes, "UTF-8");
-    }
-
-    // Method to get the private key from the Android KeyStore
-    private PrivateKey getPrivateKeyFromKeyStore() throws Exception {
-        KeyStore keyStore = KeyStore.getInstance(KEYSTORE_PROVIDER);
-        keyStore.load(null);
-
-        Entry entry = keyStore.getEntry(KEY_ALIAS, null);
-
-        if (entry == null) {
-            Log.e(TAG, "No key found under alias: " + KEY_ALIAS);
-            return null;
-        }
-
-        if (!(entry instanceof PrivateKeyEntry)) {
-            Log.e(TAG, "Key under alias " + KEY_ALIAS + " is not a private key");
-            return null;
-        }
-
-        return ((PrivateKeyEntry) entry).getPrivateKey();
     }
 
     // Method to parse the decrypted JSON string into a Map<String, String>

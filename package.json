@@ -1,31 +1,36 @@
 {
   "name": "ttmobile-notification-service",
-  "version": "1.0.0",
-  "description": "Adds support for communication notifications",
-  "main": "plugin/build/index.js",
-  "types": "plugin/build/index.d.ts",
+  "version": "1.0.1",
+  "description": "A notification service that adds communication notifications and also supports decrypting E2E encrypted notifications",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "sideEffects": false,
   "scripts": {
-    "build": "expo-module build plugin",
-    "clean": "expo-module clean plugin",
-    "prepublishOnly": "expo-module prepublishOnly",
+    "build:module": "expo-module build",
+    "build:plugin": "expo-module build plugin",
+    "clean": "expo-module clean && expo-module clean plugin",
+    "clean:module": "expo-module clean",
+    "clean:plugin": "expo-module clean plugin",
+    "prepare": "expo-module prepare",
+    "postinstall": "expo-module prepare",
     "expo-module": "expo-module"
   },
-  "repository": "https://github.com/rikardwissing/ttmobile-communication-notifications",
+  "repository": "https://github.com/teamtailor/ttmobile-notification-service",
   "bugs": {
-    "url": "https://github.com/rikardwissing/ttmobile-communication-notifications/issues"
+    "url": "https://github.com/teamtailor/ttmobile-notification-service/issues"
   },
-  "author": "Rikard Wissing <rikard.wissing@teamtailor.com> (https://github.com/rikardwissing)",
+  "author": "Teamtailor",
   "license": "MIT",
-  "homepage": "https://github.com/rikardwissing/ttmobile-communication-notifications#readme",
-  "dependencies": {},
-  "devDependencies": {
-    "@expo/config-plugins": "^7.2.5",
-    "@types/react": "^18.0.25",
+  "homepage": "https://github.com/teamtailor/ttmobile-notification-service",
+  "documentation": "https://github.com/teamtailor/ttmobile-notification-service/blob/main/README.md",
+  "dependencies": {
     "expo-module-scripts": "^3.1.0"
   },
+  "devDependencies": {
+    "@expo/config-plugins": "^7.2.5",
+    "expo-modules-core": "^2.1.1"
+  },
   "peerDependencies": {
-    "expo": "*",
-    "react": "*",
-    "react-native": "*"
+    "expo": "*"
   }
 }

@@ -4,6 +4,7 @@
 __mocks__
 __tests__
 
+/yarn.lock
 /babel.config.js
 /android/src/androidTest/
 /android/src/test/
