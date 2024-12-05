@@ -3,7 +3,7 @@ import Security
 import CryptoKit
 
 public final class CryptoUtils {
-    private static let keyTag = "com.teamtailor.app.cryptoutils"
+    private static let keyTag = "com.teamtailor.app.cryptoutils.rsa"
     private static let keychainGroup = "group.com.teamtailor.keys"
     
     public enum CryptoError: Error {
@@ -21,7 +21,7 @@ public final class CryptoUtils {
     private static func generateKeyPair(tag: Data) throws -> SecKey {
         guard let access = SecAccessControlCreateWithFlags(
             kCFAllocatorDefault,
-            kSecAttrAccessibleAfterFirstUnlock, // This means that the key is only accessible after the device has been unlocked once. So if we get notifications before that, then we will show fallback gdpr compliant message. Any other option are more restrictive. 
+            kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly, // This means that the key is only accessible after the device has been unlocked once. So if we get notifications before that, then we will show fallback gdpr compliant message. Any other option are more restrictive. 
             [],
             nil
         ) else {

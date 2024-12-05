@@ -57,10 +57,7 @@ const copyFirebaseMessagingService: ConfigPlugin<{
       // Ensure the destination directory exists
       await fs.mkdir(destDir, { recursive: true });
 
-      // Copy TTFirebaseMessagingService.java
-      const srcFile = path.join(srcDir, "TTFirebaseMessagingService.java");
-      const destFile = path.join(destDir, "TTFirebaseMessagingService.java");
-      await fs.copyFile(srcFile, destFile);
+      await fs.copyFile(path.join(srcDir, "TTFirebaseMessagingService.kt"), path.join(destDir, "TTFirebaseMessagingService.kt"));
 
       return config;
     },

@@ -28,9 +28,14 @@
   },
   "devDependencies": {
     "@expo/config-plugins": "^7.2.5",
-    "expo-modules-core": "^2.1.1"
+    "expo-modules-core": "^2.1.1",
+    "@types/react": "~18.3.12",
+    "expo": "~52.0.0",
+    "react-native": "0.76.0"
   },
   "peerDependencies": {
-    "expo": "*"
+    "expo": "*",
+    "react": "*",
+    "react-native": "*"
   }
 }
