@@ -11,7 +11,7 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 object CryptoUtils {
-    private const val KEY_ALIAS = "com.teamtailor.modules.encryption.cryptoutils2"
+    private const val KEY_ALIAS = "com.teamtailor.app.cryptoutils.rsa"
     private const val ANDROID_KEYSTORE = "AndroidKeyStore"
     private const val GCM_TAG_LENGTH = 128
 
