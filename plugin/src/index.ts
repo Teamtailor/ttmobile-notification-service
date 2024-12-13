@@ -5,10 +5,114 @@ import {
   withXcodeProject,
   withEntitlementsPlist,
   withInfoPlist,
+  withDangerousMod,
+  withAndroidManifest,
 } from "@expo/config-plugins";
 import path from "node:path";
+import fs from "node:fs/promises";
 
 const withNotificationService: ConfigPlugin = (config) => {
+  config = withPlugins(config, [
+    withIosNotificationService,
+    withFirebaseMessagingService,
+  ]);
+
+  return config;
+};
+
+// Android implementation
+const withFirebaseMessagingService: ConfigPlugin = (config) => {
+  const packageName = config.android?.package || "com.teamtailor.app";
+
+  const props = {
+    packageName,
+  };
+
+  return withPlugins(config, [
+    [copyFirebaseMessagingService, props],
+    [modifyAndroidManifest, props],
+  ]);
+};
+
+const copyFirebaseMessagingService: ConfigPlugin<{
+  packageName: string;
+}> = (config, { packageName }) => {
+  return withDangerousMod(config, [
+    "android",
+    async (config) => {
+      const packagePath = packageName.replace(/\./g, path.sep);
+      const projectRoot = config.modRequest.projectRoot;
+
+      const srcDir = path.resolve(__dirname, "../../android");
+      const destDir = path.join(
+        projectRoot,
+        "android",
+        "app",
+        "src",
+        "main",
+        "java",
+        packagePath
+      );
+
+      // Ensure the destination directory exists
+      await fs.mkdir(destDir, { recursive: true });
+
+      await fs.copyFile(path.join(srcDir, "TTFirebaseMessagingService.kt"), path.join(destDir, "TTFirebaseMessagingService.kt"));
+
+      return config;
+    },
+  ]);
+};
+
+const modifyAndroidManifest: ConfigPlugin<{
+  packageName: string;
+}> = (config, { packageName }) => {
+  return withAndroidManifest(config, async (config) => {
+    const manifest = config.modResults;
+    const application = manifest.manifest.application?.[0];
+
+    if (!application) {
+      throw new Error("AndroidManifest.xml is missing <application> element.");
+    }
+
+    // Ensure service array exists
+    if (!application.service) {
+      application.service = [];
+    }
+
+    // Check if the service is already declared
+    const serviceExists = application.service.some(
+      (service) =>
+        service.$["android:name"] ===
+        `${packageName}.TTFirebaseMessagingService`
+    );
+
+    if (!serviceExists) {
+      application.service.push({
+        $: {
+          "android:name": `${packageName}.TTFirebaseMessagingService`,
+          "android:exported": "false",
+        },
+        "intent-filter": [
+          {
+            action: [
+              {
+                $: {
+                  "android:name": "com.google.firebase.MESSAGING_EVENT",
+                },
+              },
+            ],
+          },
+        ],
+      });
+    }
+
+    return config;
+  });
+};
+
+// iOS implementation
+const withIosNotificationService: ConfigPlugin = (config) => {
   const sanitizedName = IOSConfig.XcodeUtils.sanitizedName(config.name);
 
   const props = {
@@ -19,6 +123,7 @@ const withNotificationService: ConfigPlugin = (config) => {
   };
 
   config = withPlugins(config, [
+    withAppGroupsEntitlements,
     [withEasAppExtensionConfig, props],
     [withNotificationServiceTarget, props],
     [withNotificationCommunicationsCapability, props],
@@ -26,6 +131,17 @@ const withNotificationService: ConfigPlugin = (config) => {
   ]);
 
   return config;
+};
+
+const withAppGroupsEntitlements: ConfigPlugin = (config) => {
+  return withEntitlementsPlist(config, (config) => {
+    const entitlements = config.modResults;
+    
+    // Add keychain access group entitlement
+    entitlements["com.apple.security.application-groups"] = ["group.com.teamtailor.keys"];
+    
+    return config;
+  });
 };
 
 const withEasAppExtensionConfig: ConfigPlugin<{
@@ -74,16 +190,19 @@ const withNotificationServiceTarget: ConfigPlugin<{
     const iosRoot = path.resolve(__dirname, "../..", "ios");
     const infoPlistPath = path.join(iosRoot, "NotificationService-Info.plist");
     const swiftPath = path.join(iosRoot, "NotificationService.swift");
+    const cryptoUtilsPath = path.join(iosRoot, "CryptoUtils.swift");
+    const entitlementsPath = path.join(iosRoot, "NotificationService.entitlements");
 
     const xcodeProject = config.modResults;
 
-    // Don't really think this is necessary, but it does add the references to xcode browser so nice to have -->
+    // Add files to project group
     const newGroup = xcodeProject.addPbxGroup(
-      [infoPlistPath, swiftPath],
+      [infoPlistPath, swiftPath, cryptoUtilsPath, entitlementsPath],
       "NotificationService",
       iosRoot
     );
 
+    // Add group to main group
     const groups = xcodeProject.hash.project.objects["PBXGroup"];
     Object.keys(groups).forEach(function (key) {
       if (
@@ -94,8 +213,8 @@ const withNotificationServiceTarget: ConfigPlugin<{
         xcodeProject.addToPbxGroup(newGroup.uuid, key);
       }
     });
-    // <--
 
+    // Create the target
     const target = xcodeProject.addTarget(
       targetName,
       "app_extension",
@@ -103,32 +222,42 @@ const withNotificationServiceTarget: ConfigPlugin<{
       bundleIdentifier
     );
 
+    // Add source files to build phase
     xcodeProject.addBuildPhase(
-      [swiftPath],
+      [swiftPath, cryptoUtilsPath],
       "PBXSourcesBuildPhase",
       "Sources",
       target.uuid
     );
 
+    // Add entitlements file to resources build phase
+    xcodeProject.addBuildPhase(
+      [entitlementsPath],
+      "PBXResourcesBuildPhase",
+      "Resources",
+      target.uuid
+    );
+
+    // Configure build settings
     const configurations = xcodeProject.pbxXCBuildConfigurationSection();
     for (const key in configurations) {
-      if (typeof configurations[key].buildSettings !== "undefined") {
-        const buildSettingsObj = configurations[key].buildSettings;
-        if (
-          typeof buildSettingsObj["PRODUCT_NAME"] !== "undefined" &&
-          buildSettingsObj["PRODUCT_NAME"] === `"${targetName}"`
-        ) {
-          buildSettingsObj["CLANG_ENABLE_MODULES"] = "YES";
-          buildSettingsObj["INFOPLIST_FILE"] = `"${infoPlistPath}"`;
-          buildSettingsObj["CODE_SIGN_STYLE"] = "Automatic";
-          buildSettingsObj["CURRENT_PROJECT_VERSION"] = `"${buildNumber}"`;
-          buildSettingsObj["GENERATE_INFOPLIST_FILE"] = "YES";
-          buildSettingsObj["MARKETING_VERSION"] = `"${marketingVersion}"`;
-          buildSettingsObj["SWIFT_EMIT_LOC_STRINGS"] = "YES";
-          buildSettingsObj["SWIFT_VERSION"] = "5.0";
-          buildSettingsObj["TARGETED_DEVICE_FAMILY"] = `"1,2"`;
-          buildSettingsObj["IPHONEOS_DEPLOYMENT_TARGET"] = `"15.0"`;
-        }
+      const buildSettings = configurations[key].buildSettings;
+      if (
+        typeof buildSettings !== "undefined" &&
+        buildSettings["PRODUCT_NAME"] === `"${targetName}"`
+      ) {
+        buildSettings["CLANG_ENABLE_MODULES"] = "YES";
+        buildSettings["INFOPLIST_FILE"] = `"${infoPlistPath}"`;
+        buildSettings["CODE_SIGN_ENTITLEMENTS"] = `"${entitlementsPath}"`;
+        buildSettings["CODE_SIGN_STYLE"] = "Automatic";
+        buildSettings["CURRENT_PROJECT_VERSION"] = `"${buildNumber}"`;
+        buildSettings["GENERATE_INFOPLIST_FILE"] = "YES";
+        buildSettings["MARKETING_VERSION"] = `"${marketingVersion}"`;
+        buildSettings["SWIFT_EMIT_LOC_STRINGS"] = "YES";
+        buildSettings["SWIFT_VERSION"] = "5.0";
+        buildSettings["TARGETED_DEVICE_FAMILY"] = `"1,2"`;
+        buildSettings["OTHER_CODE_SIGN_FLAGS"] = "--generate-entitlement-der";
+        buildSettings["IPHONEOS_DEPLOYMENT_TARGET"] = `"15.0"`;
       }
     }
 
@@ -149,13 +278,12 @@ const withINSendMessageIntent: ConfigPlugin = (config) => {
   return withInfoPlist(config, async (newConfig) => {
     const infoPlist = newConfig.modResults;
 
-
-    if(!infoPlist["NSUserActivityTypes"]) {
-      infoPlist["NSUserActivityTypes"] = []
+    if (!infoPlist["NSUserActivityTypes"]) {
+      infoPlist["NSUserActivityTypes"] = [];
     }
 
-    let NSUserActivityTypes = infoPlist["NSUserActivityTypes"] as Array<String>
-    if(NSUserActivityTypes.indexOf("INSendMessageIntent") === -1) {
+    let NSUserActivityTypes = infoPlist["NSUserActivityTypes"] as Array<String>;
+    if (NSUserActivityTypes.indexOf("INSendMessageIntent") === -1) {
       NSUserActivityTypes.push("INSendMessageIntent");
     }
 

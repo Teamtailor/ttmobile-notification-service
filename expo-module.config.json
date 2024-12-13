@@ -1,0 +1,10 @@
+{
+  "name": "ttmobile-notification-service",
+  "platforms": ["ios", "android"],
+  "ios": {
+    "modules": ["EncryptionModule"]
+  },
+  "android": {
+    "modules": ["com.teamtailor.modules.encryption.EncryptionModule"]
+  }
+}
