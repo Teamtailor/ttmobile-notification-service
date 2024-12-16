@@ -165,6 +165,9 @@ const withEasAppExtensionConfig: ConfigPlugin<{
               {
                 bundleIdentifier,
                 targetName,
+                entitlements: {
+                  "com.apple.security.application-groups": ["group.com.teamtailor.keys"]
+                }
               },
             ],
           },
