@@ -12,7 +12,6 @@
     "clean:module": "expo-module clean",
     "clean:plugin": "expo-module clean plugin",
     "prepare": "expo-module prepare",
-    "postinstall": "expo-module prepare",
     "expo-module": "expo-module"
   },
   "repository": "https://github.com/teamtailor/ttmobile-notification-service",
@@ -23,10 +22,8 @@
   "license": "MIT",
   "homepage": "https://github.com/teamtailor/ttmobile-notification-service",
   "documentation": "https://github.com/teamtailor/ttmobile-notification-service/blob/main/README.md",
-  "dependencies": {
-    "expo-module-scripts": "^3.1.0"
-  },
   "devDependencies": {
+    "expo-module-scripts": "^3.1.0",
     "@expo/config-plugins": "^7.2.5",
     "expo-modules-core": "^2.1.1"
   },
