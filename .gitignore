@@ -1,7 +1,3 @@
-# Build files
-/build
-/plugin/build
-
 yarn.lock
 
 # OSX
