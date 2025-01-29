@@ -22,7 +22,22 @@ const withFirebaseMessagingService = (config) => {
     return (0, config_plugins_1.withPlugins)(config, [
         [copyFirebaseMessagingService, props],
         [modifyAndroidManifest, props],
+        [withFirebaseGradleConfig, props],
     ]);
+};
+const withFirebaseGradleConfig = (config) => {
+    // Add to app level build.gradle
+    config = (0, config_plugins_1.withAppBuildGradle)(config, (config) => {
+        if (config.modResults.contents.includes("firebase-messaging")) {
+            return config;
+        }
+        const firebaseDependencies = `
+    implementation platform('com.google.firebase:firebase-bom:32.7.0')
+    implementation 'com.google.firebase:firebase-messaging'`;
+        config.modResults.contents = config.modResults.contents.replace(/dependencies\s*{/, `dependencies {${firebaseDependencies}`);
+        return config;
+    });
+    return config;
 };
 const copyFirebaseMessagingService = (config, { packageName }) => {
     return (0, config_plugins_1.withDangerousMod)(config, [

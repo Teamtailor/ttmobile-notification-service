@@ -7,6 +7,7 @@ import {
   withInfoPlist,
   withDangerousMod,
   withAndroidManifest,
+  withAppBuildGradle,
 } from "@expo/config-plugins";
 import path from "node:path";
 import fs from "node:fs/promises";
@@ -31,7 +32,30 @@ const withFirebaseMessagingService: ConfigPlugin = (config) => {
   return withPlugins(config, [
     [copyFirebaseMessagingService, props],
     [modifyAndroidManifest, props],
+    [withFirebaseGradleConfig, props],
   ]);
+};
+
+const withFirebaseGradleConfig: ConfigPlugin = (config) => {
+  // Add to app level build.gradle
+  config = withAppBuildGradle(config, (config) => {
+    if (config.modResults.contents.includes("firebase-messaging")) {
+      return config;
+    }
+
+    const firebaseDependencies = `
+    implementation platform('com.google.firebase:firebase-bom:32.7.0')
+    implementation 'com.google.firebase:firebase-messaging'`;
+
+    config.modResults.contents = config.modResults.contents.replace(
+      /dependencies\s*{/,
+      `dependencies {${firebaseDependencies}`
+    );
+
+    return config;
+  });
+
+  return config;
 };
 
 const copyFirebaseMessagingService: ConfigPlugin<{
