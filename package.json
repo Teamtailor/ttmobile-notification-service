@@ -11,7 +11,6 @@
     "clean": "expo-module clean && expo-module clean plugin",
     "clean:module": "expo-module clean",
     "clean:plugin": "expo-module clean plugin",
-    "prepare": "expo-module prepare",
     "expo-module": "expo-module"
   },
   "repository": "https://github.com/teamtailor/ttmobile-notification-service",
