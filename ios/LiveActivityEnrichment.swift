@@ -155,11 +155,6 @@ public actor LiveActivityEnricher {
       // backend enrichment simply carry no `encrypted_data`.
       log.notice("activity \(activity.id, privacy: .public): no encrypted_data in props — nothing to enrich")
       enrichedActivityIds.insert(activity.id)
-      // TEMPORARY PROOF OF CONCEPT — REMOVE once all backend pushes carry `encrypted_data`: visibly
-      // tag the meeting title so the full native update path (duplicated
-      // attributes struct -> observer -> activity.update -> widget re-render)
-      // can be verified on device without any encrypted payload.
-      await applyProofOfConceptTitleTag(to: activity, props: props)
       return
     }
 
@@ -229,35 +224,6 @@ public actor LiveActivityEnricher {
 
     enrichedActivityIds.insert(activity.id)
     log.notice("activity \(activity.id, privacy: .public): enriched (key=\(stagingKey, privacy: .public) name=\(hasName, privacy: .public) avatar=\(hasAvatar, privacy: .public))")
-  }
-
-  // TEMPORARY PROOF OF CONCEPT — REMOVE once all backend pushes carry `encrypted_data`. Prefixes the
-  // meeting title with a lightning bolt via a fully native content-state
-  // update, preserving staleDate/relevanceScore exactly like real enrichment.
-  private func applyProofOfConceptTitleTag(
-    to activity: Activity<LiveActivityAttributes>,
-    props: [String: Any]
-  ) async {
-    var props = props
-    let title = props["meetingTitle"] as? String ?? "Meeting"
-    guard !title.hasPrefix("⚡") else { return }
-    props["meetingTitle"] = "⚡ \(title)"
-    props["enrichedAt"] = Int(Date().timeIntervalSince1970)
-
-    guard let mergedProps = serializeJSONObject(props) else {
-      log.error("PoC: failed to re-serialize props for activity \(activity.id, privacy: .public)")
-      return
-    }
-
-    let state = activity.content.state
-    let newState = LiveActivityAttributes.ContentState(name: state.name, props: mergedProps)
-    let content = ActivityContent(
-      state: newState,
-      staleDate: activity.content.staleDate,
-      relevanceScore: activity.content.relevanceScore
-    )
-    await activity.update(content)
-    log.notice("PoC: natively tagged meetingTitle for activity \(activity.id, privacy: .public)")
   }
 
   // MARK: - Encrypted blob extraction
