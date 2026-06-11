@@ -1,0 +1,414 @@
+import ActivityKit
+import Foundation
+import os
+
+// ActivityKit matches Live Activities by the UNQUALIFIED type name of the
+// ActivityAttributes struct — the same string a push-to-start payload carries in
+// its `attributes-type` field — not by Swift type identity. expo-widgets'
+// LiveActivityAttributes is internal to its pod, so this shape-identical
+// duplicate gives this pod an independent handle on the SAME activities (the
+// main app and the widget extension already rely on this name matching to share
+// activities across targets). ContentState must stay field-identical to
+// expo-widgets' definition: { name: String, props: String }.
+//
+// PROVEN ON DEVICE (iOS 26.5): `.activities` enumeration and `.update()` work
+// fine through this duplicate. `activityUpdates` does NOT — when two same-named
+// attributes types each iterate it in one process, only the most recently
+// registered iterator (the ExpoWidgets module's) receives events; this pod's
+// stream silently yields nothing. Hence the notification bridge below.
+@available(iOS 16.2, *)
+struct LiveActivityAttributes: ActivityAttributes {
+  struct ContentState: Codable, Hashable {
+    var name: String
+    var props: String
+  }
+}
+
+/// Enriches push-started Live Activities with E2E-encrypted PII entirely on the
+/// native side, during the background wake an ActivityKit push-to-start grants
+/// ("to download assets that the Live Activity needs", per Apple) — no JS, no
+/// React, no bridge.
+///
+/// How activities reach the enricher (two paths, deduped by activity id):
+/// 1. LAUNCH ENUMERATION — `Activity<LiveActivityAttributes>.activities` at
+///    `didFinishLaunching`. Covers the production wake: a push-to-start
+///    launches the terminated app and the activity already exists.
+/// 2. NOTIFICATION BRIDGE — the patched expo-widgets WidgetsModule posts
+///    `TTExpoWidgetsActivityStarted` (with activityId/name/props) from its own
+///    `activityUpdates` observer. Covers activities that start while the app is
+///    already running. This pod's own `activityUpdates` iterator is starved
+///    whenever the ExpoWidgets module's iterator is also live (same
+///    attributes-type name registered twice in one process — the later
+///    registration wins), so it is kept only as a logged fallback.
+///
+/// Pipeline, per newly seen activity:
+/// 1. Parse the content-state `props` JSON and extract its `encrypted_data` field — a
+///    `MobileNotifications::PayloadEncryptor` blob `{encrypted_key, cipher_text,
+///    nonce, tag}` (all strict base64), encrypted against this device's
+///    registered public key.
+/// 2. Decrypt with `CryptoUtils.hybridDecrypt` (same pod, same key the NSE
+///    uses) into a JSON object of PII fields, e.g. `{candidateName, avatarUrl}`.
+/// 3. Download `avatarUrl` (https) into the app-group container under
+///    `ExpoWidgets/` so the widget extension can read it.
+/// 4. Stage the enrichment in app-group UserDefaults under
+///    `__tt_la_enrichment_<meetingEventId>` — the widget extension merges it
+///    into props at render time, which keeps enrichment alive even if a later
+///    APNs channel update replaces the content-state wholesale (the app is NOT
+///    woken for those, so only a render-time merge survives a clobber).
+/// 5. Update the activity with the enriched props merged in (preserving
+///    staleDate and relevanceScore) to trigger an immediate re-render.
+///
+/// The decryption key is `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`: a
+/// wake between reboot and first unlock cannot decrypt. That's a deliberate
+/// fallback — the widget renders its non-PII state ("Meeting" eyebrow, no
+/// avatar) and a later launch retries, since failed activities are not marked
+/// as enriched.
+@available(iOS 16.2, *)
+public actor LiveActivityEnricher {
+  public static let shared = LiveActivityEnricher()
+
+  /// Posted by the patched expo-widgets WidgetsModule for every newly observed
+  /// activity. userInfo: `activityId`, `name`, `props` (strings).
+  public static let activityStartedNotification = Notification.Name("TTExpoWidgetsActivityStarted")
+
+  // Mirrors the expo-widgets patch's wake logging: notice-level os.Logger lines
+  // are persisted to the device log store, so a background/terminated wake can
+  // be verified retroactively with `log collect --device`. Values are .public —
+  // unified logging redacts dynamics by default. Never log decrypted values.
+  private let log = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "ttmobile-notification-service",
+    category: "LA-enrich"
+  )
+
+  private var observerTask: Task<Void, Never>?
+  private var startNotificationToken: NSObjectProtocol?
+  private var enrichedActivityIds = Set<String>()
+
+  private static let stagingKeyPrefix = "__tt_la_enrichment_"
+  private static let avatarFilePrefix = "la-avatar-"
+
+  private init() {}
+
+  /// Idempotent. Called from the app-delegate subscriber on every launch —
+  /// including background launches triggered by a push-to-start notification.
+  public func start() {
+    guard observerTask == nil else { return }
+    guard ActivityAuthorizationInfo().areActivitiesEnabled else {
+      log.notice("Live Activities disabled — enrichment observer not started")
+      return
+    }
+
+    log.notice("starting enrichment observer (existing activities: \(Activity<LiveActivityAttributes>.activities.count, privacy: .public))")
+
+    // The subscriber attaches this BEFORE the ExpoWidgets module exists (JS
+    // hasn't loaded at didFinishLaunching), so no bridge post can be missed.
+    startNotificationToken = NotificationCenter.default.addObserver(
+      forName: Self.activityStartedNotification,
+      object: nil,
+      queue: nil
+    ) { note in
+      guard let id = note.userInfo?["activityId"] as? String else { return }
+      Task { await LiveActivityEnricher.shared.enrichActivity(withId: id) }
+    }
+
+    observerTask = Task {
+      pruneStaleEnrichment()
+      for activity in Activity<LiveActivityAttributes>.activities {
+        await enrich(activity)
+      }
+      // Fallback only — starved while the ExpoWidgets module's iterator is
+      // live (see type comment). The logs make its behavior observable.
+      log.notice("own activityUpdates iteration starting (fallback path)")
+      for await activity in Activity<LiveActivityAttributes>.activityUpdates {
+        log.notice("own activityUpdates yielded \(activity.id, privacy: .public)")
+        await enrich(activity)
+      }
+      log.notice("own activityUpdates iteration ENDED")
+    }
+  }
+
+  /// Bridge entry point: re-resolves the activity by id through `.activities`
+  /// (unaffected by the update-stream collision) and enriches it.
+  private func enrichActivity(withId id: String) async {
+    guard let activity = Activity<LiveActivityAttributes>.activities.first(where: { $0.id == id }) else {
+      log.error("bridged activity \(id, privacy: .public) not found via .activities lookup")
+      return
+    }
+    await enrich(activity)
+  }
+
+  // MARK: - Enrichment pipeline
+
+  private func enrich(_ activity: Activity<LiveActivityAttributes>) async {
+    guard !enrichedActivityIds.contains(activity.id) else { return }
+
+    let state = activity.content.state
+    guard var props = parseJSONObject(state.props) else {
+      log.error("activity \(activity.id, privacy: .public): props is not a JSON object — skipping")
+      enrichedActivityIds.insert(activity.id)
+      return
+    }
+
+    guard let enc = extractEncryptedBlob(props) else {
+      // Not an error: app-started activities (QA tester) and pushes predating
+      // backend enrichment simply carry no `encrypted_data`.
+      log.notice("activity \(activity.id, privacy: .public): no encrypted_data in props — nothing to enrich")
+      enrichedActivityIds.insert(activity.id)
+      // TEMPORARY PROOF OF CONCEPT — REMOVE once all backend pushes carry `encrypted_data`: visibly
+      // tag the meeting title so the full native update path (duplicated
+      // attributes struct -> observer -> activity.update -> widget re-render)
+      // can be verified on device without any encrypted payload.
+      await applyProofOfConceptTitleTag(to: activity, props: props)
+      return
+    }
+
+    let plaintext: String
+    do {
+      plaintext = try CryptoUtils.hybridDecrypt(
+        encryptedKey: enc.encryptedKey,
+        cipherText: enc.cipherText,
+        nonce: enc.nonce,
+        tag: enc.tag
+      )
+    } catch {
+      // Most likely reboot-before-first-unlock (key inaccessible) or a stale
+      // public key. NOT marked enriched — a later launch retries.
+      log.error("activity \(activity.id, privacy: .public): hybridDecrypt failed: \(String(describing: error), privacy: .public)")
+      return
+    }
+
+    guard var enrichment = parseJSONObject(plaintext) else {
+      log.error("activity \(activity.id, privacy: .public): decrypted payload is not a JSON object")
+      enrichedActivityIds.insert(activity.id)
+      return
+    }
+
+    // Stable per-meeting key shared with the render-time merge in the widget
+    // extension; the activity id is process-discoverable but absent from props,
+    // so it can't key a lookup done from props alone.
+    let stagingKey = stableKey(fromProps: props) ?? activity.id
+
+    // Replace the remote avatar URL with a local app-group file the widget
+    // extension can load. On download failure the field is dropped entirely:
+    // the renderer's `uiImage` branch does a synchronous Data(contentsOf:) with
+    // whatever URL it gets, and handing it an https URL would mean sync network
+    // on the extension's render path.
+    if let remote = enrichment["avatarUrl"] as? String {
+      enrichment["avatarUrl"] = nil
+      if let localURL = await downloadAvatar(from: remote, key: stagingKey) {
+        enrichment["avatarUrl"] = localURL.absoluteString
+      }
+    }
+
+    let hasName = enrichment["candidateName"] != nil
+    let hasAvatar = enrichment["avatarUrl"] != nil
+    stageEnrichment(enrichment, forKey: stagingKey)
+
+    // Merge into the content-state too and update natively. The staged copy is
+    // what survives content-state clobbers (render-time merge); this merge
+    // makes the enrichment visible NOW, and `enrichedAt` guards against
+    // ActivityKit deduplicating an identical content-state.
+    for (key, value) in enrichment {
+      props[key] = value
+    }
+    props["enrichedAt"] = Int(Date().timeIntervalSince1970)
+
+    guard let mergedProps = serializeJSONObject(props) else {
+      log.error("activity \(activity.id, privacy: .public): failed to re-serialize enriched props")
+      return
+    }
+
+    let newState = LiveActivityAttributes.ContentState(name: state.name, props: mergedProps)
+    let content = ActivityContent(
+      state: newState,
+      staleDate: activity.content.staleDate,
+      relevanceScore: activity.content.relevanceScore
+    )
+    await activity.update(content)
+
+    enrichedActivityIds.insert(activity.id)
+    log.notice("activity \(activity.id, privacy: .public): enriched (key=\(stagingKey, privacy: .public) name=\(hasName, privacy: .public) avatar=\(hasAvatar, privacy: .public))")
+  }
+
+  // TEMPORARY PROOF OF CONCEPT — REMOVE once all backend pushes carry `encrypted_data`. Prefixes the
+  // meeting title with a lightning bolt via a fully native content-state
+  // update, preserving staleDate/relevanceScore exactly like real enrichment.
+  private func applyProofOfConceptTitleTag(
+    to activity: Activity<LiveActivityAttributes>,
+    props: [String: Any]
+  ) async {
+    var props = props
+    let title = props["meetingTitle"] as? String ?? "Meeting"
+    guard !title.hasPrefix("⚡") else { return }
+    props["meetingTitle"] = "⚡ \(title)"
+    props["enrichedAt"] = Int(Date().timeIntervalSince1970)
+
+    guard let mergedProps = serializeJSONObject(props) else {
+      log.error("PoC: failed to re-serialize props for activity \(activity.id, privacy: .public)")
+      return
+    }
+
+    let state = activity.content.state
+    let newState = LiveActivityAttributes.ContentState(name: state.name, props: mergedProps)
+    let content = ActivityContent(
+      state: newState,
+      staleDate: activity.content.staleDate,
+      relevanceScore: activity.content.relevanceScore
+    )
+    await activity.update(content)
+    log.notice("PoC: natively tagged meetingTitle for activity \(activity.id, privacy: .public)")
+  }
+
+  // MARK: - Encrypted blob extraction
+
+  private struct EncryptedBlob {
+    let encryptedKey: String
+    let cipherText: String
+    let nonce: String
+    let tag: String
+  }
+
+  /// Accepts `encrypted_data` as either a nested JSON object or a JSON-encoded string
+  /// (the NSE's `encrypted_data` ships as a string; the props embedding may
+  /// reasonably use either).
+  private func extractEncryptedBlob(_ props: [String: Any]) -> EncryptedBlob? {
+    var dict = props["encrypted_data"] as? [String: Any]
+    if dict == nil, let raw = props["encrypted_data"] as? String {
+      dict = parseJSONObject(raw)
+    }
+    guard let dict,
+          let encryptedKey = dict["encrypted_key"] as? String,
+          let cipherText = dict["cipher_text"] as? String,
+          let nonce = dict["nonce"] as? String,
+          let tag = dict["tag"] as? String else {
+      return nil
+    }
+    return EncryptedBlob(encryptedKey: encryptedKey, cipherText: cipherText, nonce: nonce, tag: tag)
+  }
+
+  private func stableKey(fromProps props: [String: Any]) -> String? {
+    guard let value = props["meetingEventId"] else { return nil }
+    if let string = value as? String { return string }
+    if let number = value as? NSNumber { return number.stringValue }
+    return nil
+  }
+
+  // MARK: - Avatar download
+
+  private func downloadAvatar(from urlString: String, key: String) async -> URL? {
+    guard let url = URL(string: urlString), let scheme = url.scheme,
+          scheme == "https" || scheme == "http" else {
+      log.error("avatar url for key \(key, privacy: .public) is not http(s) — dropping")
+      return nil
+    }
+    guard let directory = sharedImagesDirectory() else { return nil }
+
+    let destination = directory.appendingPathComponent("\(Self.avatarFilePrefix)\(key)")
+    do {
+      let started = Date()
+      let (data, response) = try await URLSession.shared.data(from: url)
+      if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+        log.error("avatar download for key \(key, privacy: .public) got HTTP \(http.statusCode, privacy: .public)")
+        return nil
+      }
+      try data.write(to: destination, options: .atomic)
+      let elapsed = Int(Date().timeIntervalSince(started) * 1000)
+      log.notice("avatar for key \(key, privacy: .public): \(data.count, privacy: .public) bytes in \(elapsed, privacy: .public)ms")
+      return destination
+    } catch {
+      log.error("avatar download for key \(key, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+      return nil
+    }
+  }
+
+  /// `<app-group container>/ExpoWidgets/` — the same directory expo-widgets
+  /// exposes to JS as `widgetsDirectory` ("shared images for widgets",
+  /// readable by both the app and the widget extension).
+  private func sharedImagesDirectory() -> URL? {
+    guard let container = FileManager.default.containerURL(
+      forSecurityApplicationGroupIdentifier: appGroupIdentifier
+    ) else {
+      log.error("no app-group container for \(self.appGroupIdentifier, privacy: .public)")
+      return nil
+    }
+    let directory = container.appendingPathComponent("ExpoWidgets", isDirectory: true)
+    do {
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    } catch {
+      log.error("failed to create shared images directory: \(String(describing: error), privacy: .public)")
+      return nil
+    }
+    return directory
+  }
+
+  /// The same Info.plist key WidgetsStorage reads (written by the expo-widgets
+  /// config plugin from app.config's `groupIdentifier`), so the staging store
+  /// and the widget extension's reader can never drift apart. The fallback is
+  /// the group CryptoUtils already hardcodes for the keychain.
+  private var appGroupIdentifier: String {
+    (Bundle.main.object(forInfoDictionaryKey: "ExpoWidgetsAppGroupIdentifier") as? String)
+      ?? "group.com.teamtailor.keys"
+  }
+
+  // MARK: - Staging (read by the widget extension's render-time merge)
+
+  private func stageEnrichment(_ enrichment: [String: Any], forKey key: String) {
+    guard let defaults = UserDefaults(suiteName: appGroupIdentifier) else {
+      log.error("no app-group UserDefaults for \(self.appGroupIdentifier, privacy: .public)")
+      return
+    }
+    defaults.set(enrichment, forKey: Self.stagingKeyPrefix + key)
+  }
+
+  /// Drops staged entries and avatar files whose meeting no longer has a live
+  /// activity, so the app-group store doesn't grow without bound. Runs once per
+  /// observer start, before enrichment.
+  private func pruneStaleEnrichment() {
+    guard let defaults = UserDefaults(suiteName: appGroupIdentifier) else { return }
+
+    let activeKeys = Set(
+      Activity<LiveActivityAttributes>.activities.map { activity -> String in
+        guard let props = parseJSONObject(activity.content.state.props),
+              let key = stableKey(fromProps: props) else {
+          return activity.id
+        }
+        return key
+      }
+    )
+
+    for storedKey in defaults.dictionaryRepresentation().keys
+    where storedKey.hasPrefix(Self.stagingKeyPrefix) {
+      let key = String(storedKey.dropFirst(Self.stagingKeyPrefix.count))
+      if !activeKeys.contains(key) {
+        defaults.removeObject(forKey: storedKey)
+        log.notice("pruned stale enrichment for key \(key, privacy: .public)")
+      }
+    }
+
+    guard let directory = sharedImagesDirectory(),
+          let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
+      return
+    }
+    for file in files where file.lastPathComponent.hasPrefix(Self.avatarFilePrefix) {
+      let key = String(file.lastPathComponent.dropFirst(Self.avatarFilePrefix.count))
+      if !activeKeys.contains(key) {
+        try? FileManager.default.removeItem(at: file)
+      }
+    }
+  }
+
+  // MARK: - JSON helpers
+
+  private func parseJSONObject(_ string: String) -> [String: Any]? {
+    guard let data = string.data(using: .utf8) else { return nil }
+    return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+  }
+
+  private func serializeJSONObject(_ object: [String: Any]) -> String? {
+    guard JSONSerialization.isValidJSONObject(object),
+          let data = try? JSONSerialization.data(withJSONObject: object) else {
+      return nil
+    }
+    return String(data: data, encoding: .utf8)
+  }
+}

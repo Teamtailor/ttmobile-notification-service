@@ -2,7 +2,8 @@
   "name": "ttmobile-notification-service",
   "platforms": ["ios", "android"],
   "ios": {
-    "modules": ["EncryptionModule"]
+    "modules": ["EncryptionModule"],
+    "appDelegateSubscribers": ["LiveActivityEnrichmentAppDelegateSubscriber"]
   },
   "android": {
     "modules": ["com.teamtailor.modules.encryption.EncryptionModule"]
