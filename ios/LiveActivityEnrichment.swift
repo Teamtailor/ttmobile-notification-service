@@ -1,5 +1,6 @@
 import ActivityKit
 import Foundation
+import UIKit
 import os
 
 // ActivityKit matches Live Activities by the UNQUALIFIED type name of the
@@ -311,14 +312,37 @@ public actor LiveActivityEnricher {
         log.error("avatar download for key \(key, privacy: .public) got HTTP \(http.statusCode, privacy: .public)")
         return nil
       }
-      try data.write(to: destination, options: .atomic)
+      let imageData = downscaledImageData(data, maxDimension: 512) ?? data
+      try imageData.write(to: destination, options: .atomic)
       let elapsed = Int(Date().timeIntervalSince(started) * 1000)
-      log.notice("avatar for key \(key, privacy: .public): \(data.count, privacy: .public) bytes in \(elapsed, privacy: .public)ms")
+      log.notice("avatar for key \(key, privacy: .public): \(data.count, privacy: .public) bytes downloaded, \(imageData.count, privacy: .public) bytes written in \(elapsed, privacy: .public)ms")
       return destination
     } catch {
       log.error("avatar download for key \(key, privacy: .public) failed: \(String(describing: error), privacy: .public)")
       return nil
     }
+  }
+
+  /// Widget extensions render images within a tight memory budget — a
+  /// full-resolution original decodes to tens of MB and WidgetKit drops it
+  /// (the activity shows a gray box instead). The backend already requests a
+  /// CDN-resized variant; this is the device-side guarantee for anything that
+  /// slips through (e.g. social-sourced originals). Re-encodes as JPEG when
+  /// downscaling; returns nil (caller keeps the original bytes) when the image
+  /// is already small enough or can't be decoded.
+  private func downscaledImageData(_ data: Data, maxDimension: CGFloat) -> Data? {
+    guard let image = UIImage(data: data) else { return nil }
+    let largest = max(image.size.width, image.size.height)
+    guard largest > maxDimension else { return nil }
+
+    let scale = maxDimension / largest
+    let newSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    let resized = UIGraphicsImageRenderer(size: newSize, format: format).image { _ in
+      image.draw(in: CGRect(origin: .zero, size: newSize))
+    }
+    return resized.jpegData(compressionQuality: 0.85)
   }
 
   /// `<app-group container>/ExpoWidgets/` — the same directory expo-widgets
