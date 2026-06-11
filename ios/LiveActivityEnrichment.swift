@@ -184,15 +184,18 @@ public actor LiveActivityEnricher {
     // so it can't key a lookup done from props alone.
     let stagingKey = stableKey(fromProps: props) ?? activity.id
 
-    // Replace the remote avatar URL with a local app-group file the widget
-    // extension can load. On download failure the field is dropped entirely:
-    // the renderer's `uiImage` branch does a synchronous Data(contentsOf:) with
-    // whatever URL it gets, and handing it an https URL would mean sync network
-    // on the extension's render path.
-    if let remote = enrichment["avatarUrl"] as? String {
-      enrichment["avatarUrl"] = nil
-      if let localURL = await downloadAvatar(from: remote, key: stagingKey) {
-        enrichment["avatarUrl"] = localURL.absoluteString
+    // Replace the remote avatar URLs with local app-group files the widget
+    // extension can load (first candidate + the stacked second one for group
+    // meetings). On download failure the field is dropped entirely: the
+    // renderer's `uiImage` branch does a synchronous Data(contentsOf:) with
+    // whatever URL it gets, and handing it an https URL would mean sync
+    // network on the extension's render path.
+    for (field, fileSuffix) in [("avatarUrl", ""), ("secondAvatarUrl", "-2")] {
+      if let remote = enrichment[field] as? String {
+        enrichment[field] = nil
+        if let localURL = await downloadAvatar(from: remote, key: stagingKey + fileSuffix) {
+          enrichment[field] = localURL.absoluteString
+        }
       }
     }
 
@@ -380,7 +383,11 @@ public actor LiveActivityEnricher {
       return
     }
     for file in files where file.lastPathComponent.hasPrefix(Self.avatarFilePrefix) {
-      let key = String(file.lastPathComponent.dropFirst(Self.avatarFilePrefix.count))
+      var key = String(file.lastPathComponent.dropFirst(Self.avatarFilePrefix.count))
+      // Second-candidate avatars are stored as la-avatar-<key>-2.
+      if key.hasSuffix("-2") {
+        key = String(key.dropLast(2))
+      }
       if !activeKeys.contains(key) {
         try? FileManager.default.removeItem(at: file)
       }
