@@ -12,11 +12,12 @@ import os
 // activities across targets). ContentState must stay field-identical to
 // expo-widgets' definition: { name: String, props: String }.
 //
-// PROVEN ON DEVICE (iOS 26.5): `.activities` enumeration and `.update()` work
-// fine through this duplicate. `activityUpdates` does NOT — when two same-named
-// attributes types each iterate it in one process, only the most recently
-// registered iterator (the ExpoWidgets module's) receives events; this pod's
-// stream silently yields nothing. Hence the notification bridge below.
+// PROVEN ON DEVICE (iOS 26.5): `.activities` enumeration, `.update()` AND
+// `activityUpdates` all work through this duplicate. Caveat: if two same-named
+// attributes types ever iterate `activityUpdates` in one process, only the most
+// recently registered iterator receives events (this starved the enricher while
+// the expo-widgets patch carried its own observer — since removed; keep this
+// pod's iterator the ONLY one).
 @available(iOS 16.2, *)
 struct LiveActivityAttributes: ActivityAttributes {
   struct ContentState: Codable, Hashable {
@@ -34,13 +35,10 @@ struct LiveActivityAttributes: ActivityAttributes {
 /// 1. LAUNCH ENUMERATION — `Activity<LiveActivityAttributes>.activities` at
 ///    `didFinishLaunching`. Covers the production wake: a push-to-start
 ///    launches the terminated app and the activity already exists.
-/// 2. NOTIFICATION BRIDGE — the patched expo-widgets WidgetsModule posts
-///    `TTExpoWidgetsActivityStarted` (with activityId/name/props) from its own
-///    `activityUpdates` observer. Covers activities that start while the app is
-///    already running. This pod's own `activityUpdates` iterator is starved
-///    whenever the ExpoWidgets module's iterator is also live (same
-///    attributes-type name registered twice in one process — the later
-///    registration wins), so it is kept only as a logged fallback.
+/// 2. `activityUpdates` ITERATION — covers activities that start while the app
+///    is already running. This pod owns the process's ONLY iterator (the
+///    expo-widgets observer that used to starve it was removed from the patch
+///    2026-06-12; see the attributes-type comment above).
 ///
 /// Pipeline, per newly seen activity:
 /// 1. Parse the content-state `props` JSON and extract its `encrypted_data` field — a
@@ -68,11 +66,7 @@ struct LiveActivityAttributes: ActivityAttributes {
 public actor LiveActivityEnricher {
   public static let shared = LiveActivityEnricher()
 
-  /// Posted by the patched expo-widgets WidgetsModule for every newly observed
-  /// activity. userInfo: `activityId`, `name`, `props` (strings).
-  public static let activityStartedNotification = Notification.Name("TTExpoWidgetsActivityStarted")
-
-  // Mirrors the expo-widgets patch's wake logging: notice-level os.Logger lines
+  // Notice-level os.Logger lines
   // are persisted to the device log store, so a background/terminated wake can
   // be verified retroactively with `log collect --device`. Values are .public —
   // unified logging redacts dynamics by default. Never log decrypted values.
@@ -82,7 +76,6 @@ public actor LiveActivityEnricher {
   )
 
   private var observerTask: Task<Void, Never>?
-  private var startNotificationToken: NSObjectProtocol?
   private var enrichedActivityIds = Set<String>()
   private var contentProbeTasks: [String: Task<Void, Never>] = [:]
 
@@ -102,41 +95,18 @@ public actor LiveActivityEnricher {
 
     log.notice("starting enrichment observer (existing activities: \(Activity<LiveActivityAttributes>.activities.count, privacy: .public))")
 
-    // The subscriber attaches this BEFORE the ExpoWidgets module exists (JS
-    // hasn't loaded at didFinishLaunching), so no bridge post can be missed.
-    startNotificationToken = NotificationCenter.default.addObserver(
-      forName: Self.activityStartedNotification,
-      object: nil,
-      queue: nil
-    ) { note in
-      guard let id = note.userInfo?["activityId"] as? String else { return }
-      Task { await LiveActivityEnricher.shared.enrichActivity(withId: id) }
-    }
-
     observerTask = Task {
       pruneStaleEnrichment()
       for activity in Activity<LiveActivityAttributes>.activities {
         await enrich(activity)
       }
-      // Fallback only — starved while the ExpoWidgets module's iterator is
-      // live (see type comment). The logs make its behavior observable.
-      log.notice("own activityUpdates iteration starting (fallback path)")
+      log.notice("own activityUpdates iteration starting")
       for await activity in Activity<LiveActivityAttributes>.activityUpdates {
         log.notice("own activityUpdates yielded \(activity.id, privacy: .public)")
         await enrich(activity)
       }
       log.notice("own activityUpdates iteration ENDED")
     }
-  }
-
-  /// Bridge entry point: re-resolves the activity by id through `.activities`
-  /// (unaffected by the update-stream collision) and enriches it.
-  private func enrichActivity(withId id: String) async {
-    guard let activity = Activity<LiveActivityAttributes>.activities.first(where: { $0.id == id }) else {
-      log.error("bridged activity \(id, privacy: .public) not found via .activities lookup")
-      return
-    }
-    await enrich(activity)
   }
 
   // PROBE: app-process visibility of remote Live Activity updates. Every
