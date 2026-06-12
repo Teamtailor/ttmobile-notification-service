@@ -2,6 +2,7 @@ import {
   ConfigPlugin,
   IOSConfig,
   withPlugins,
+  withBaseMod,
   withXcodeProject,
   withEntitlementsPlist,
   withInfoPlist,
@@ -168,13 +169,29 @@ const withIosNotificationService: ConfigPlugin = (config) => {
 const WIDGETS_TARGET_NAME = "ExpoWidgetsTarget";
 const RENDER_ENRICHMENT_FILENAME = "LiveActivityRenderEnrichment.swift";
 
+// withBaseMod + nextMod-first (NOT plain withXcodeProject): expo's ios
+// xcodeproj mods do not run in plugin-array order — later registrations run
+// OUTERMOST/first, so a plain mod would execute before expo-widgets has
+// created the target. Deferring our work until after nextMod guarantees every
+// inner mod (including expo-widgets' target creation) has finished. Same
+// pattern as ttmobile's plugins/withMeetingActivityLogo.js.
 const withWidgetsRenderEnrichment: ConfigPlugin = (config) => {
-  return withXcodeProject(config, (config) => {
-    const project = config.modResults;
+  return withBaseMod(config, {
+    platform: "ios",
+    mod: "xcodeproj",
+    async action({ modRequest: { nextMod, ...modRequest }, ...cfg }: any) {
+      const nextCfg = await nextMod({ ...cfg, modRequest });
+      addRenderEnrichmentSource(nextCfg.modResults);
+      return nextCfg;
+    },
+  });
+};
+
+const addRenderEnrichmentSource = (project: any) => {
     const targetKey = project.findTargetKey(WIDGETS_TARGET_NAME);
     if (!targetKey) {
       throw new Error(
-        `${WIDGETS_TARGET_NAME} was not found. List ttmobile-notification-service AFTER expo-widgets in the app config plugins.`
+        `${WIDGETS_TARGET_NAME} was not found — is expo-widgets in the app config plugins?`
       );
     }
 
@@ -192,7 +209,7 @@ const withWidgetsRenderEnrichment: ConfigPlugin = (config) => {
         String(fileReferences[key].path).replace(/^"|"$/g, "") === swiftPath
     );
     if (alreadyAdded) {
-      return config;
+      return;
     }
 
     // The target already compiles index.swift, so a Sources phase exists —
@@ -237,9 +254,6 @@ const withWidgetsRenderEnrichment: ConfigPlugin = (config) => {
       value: buildFileUuid,
       comment: `${RENDER_ENRICHMENT_FILENAME} in Sources`,
     });
-
-    return config;
-  });
 };
 
 const withAppGroupsEntitlements: ConfigPlugin = (config) => {
