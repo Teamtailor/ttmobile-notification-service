@@ -84,6 +84,7 @@ public actor LiveActivityEnricher {
   private var observerTask: Task<Void, Never>?
   private var startNotificationToken: NSObjectProtocol?
   private var enrichedActivityIds = Set<String>()
+  private var contentProbeTasks: [String: Task<Void, Never>] = [:]
 
   private static let stagingKeyPrefix = "__tt_la_enrichment_"
   private static let avatarFilePrefix = "la-avatar-"
@@ -138,9 +139,30 @@ public actor LiveActivityEnricher {
     await enrich(activity)
   }
 
+  // PROBE: app-process visibility of remote Live Activity updates. Every
+  // content-state change this process observes logs a persisted line. The
+  // experiment for "does a channel broadcast wake the app?": force-quit the
+  // app, send a broadcast, watch the card re-render — then `log collect
+  // --device` and compare categories. An `LA-render` line (widget process,
+  // LiveActivityRenderEnrichment) WITHOUT a matching `LA-enrich` "saw content
+  // update" line at that timestamp is empirical proof the update rendered
+  // without waking the app. While the app IS alive, lines here also show
+  // local update() calls — match timestamps when reading the log.
+  private func probeContentUpdates(_ activity: Activity<LiveActivityAttributes>) {
+    guard contentProbeTasks[activity.id] == nil else { return }
+
+    contentProbeTasks[activity.id] = Task { [log] in
+      for await content in activity.contentUpdates {
+        log.notice("app-process saw content update for \(activity.id, privacy: .public) (staleDate: \(content.staleDate.map { "\($0)" } ?? "nil", privacy: .public))")
+      }
+      log.notice("app-process content updates ENDED for \(activity.id, privacy: .public)")
+    }
+  }
+
   // MARK: - Enrichment pipeline
 
   private func enrich(_ activity: Activity<LiveActivityAttributes>) async {
+    probeContentUpdates(activity)
     guard !enrichedActivityIds.contains(activity.id) else { return }
 
     let state = activity.content.state
