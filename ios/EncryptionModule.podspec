@@ -11,7 +11,17 @@ Pod::Spec.new do |s|
   s.homepage       = package['homepage']
   s.platform       = :ios, '13.4'
   s.source         = { git: package['repository'], tag: "v#{s.version}" }
-  s.source_files   = 'EncryptionModule.swift', 'CryptoUtils.swift'
+  # NotificationService.swift is deliberately NOT in the pod — the config
+  # plugin compiles it (plus its own copy of CryptoUtils.swift) directly into
+  # the notification-service extension target. The LiveActivityEnrichment files
+  # are main-app only: they run during the background wake an ActivityKit
+  # push-to-start grants, which happens in the app process.
+  # LiveActivityRenderEnrichment.swift is likewise excluded: the config plugin
+  # compiles it into the expo-widgets WIDGET-EXTENSION target, where the render
+  # pipeline discovers it by class name to re-apply staged enrichment that
+  # broadcast-channel pushes would otherwise wipe.
+  s.source_files   = 'EncryptionModule.swift', 'CryptoUtils.swift',
+                     'LiveActivityEnrichment.swift', 'LiveActivityEnrichmentAppDelegateSubscriber.swift'
   s.dependency 'ExpoModulesCore'
   
   # Ensure we can use keychain

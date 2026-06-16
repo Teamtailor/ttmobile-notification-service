@@ -105,8 +105,84 @@ const withIosNotificationService = (config) => {
         [withNotificationServiceTarget, props],
         [withNotificationCommunicationsCapability, props],
         [withINSendMessageIntent, props],
+        withWidgetsRenderEnrichment,
     ]);
     return config;
+};
+// Compiles LiveActivityRenderEnrichment.swift into the expo-widgets
+// widget-extension target. The widget process is where Live Activity
+// content-state is decoded and rendered; expo-widgets discovers the class by
+// name (ExpoWidgetsLiveActivityPropsTransformer) at render time and lets it
+// re-apply the enrichment that broadcast-channel pushes would otherwise wipe.
+// The target is created by the expo-widgets plugin, so this package must be
+// listed AFTER expo-widgets in the app config's plugins array.
+const WIDGETS_TARGET_NAME = "ExpoWidgetsTarget";
+const RENDER_ENRICHMENT_FILENAME = "LiveActivityRenderEnrichment.swift";
+// withBaseMod + nextMod-first (NOT plain withXcodeProject): expo's ios
+// xcodeproj mods do not run in plugin-array order — later registrations run
+// OUTERMOST/first, so a plain mod would execute before expo-widgets has
+// created the target. Deferring our work until after nextMod guarantees every
+// inner mod (including expo-widgets' target creation) has finished. Same
+// pattern as ttmobile's plugins/withMeetingActivityLogo.js.
+const withWidgetsRenderEnrichment = (config) => {
+    return (0, config_plugins_1.withBaseMod)(config, {
+        platform: "ios",
+        mod: "xcodeproj",
+        async action({ modRequest: { nextMod, ...modRequest }, ...cfg }) {
+            const nextCfg = await nextMod({ ...cfg, modRequest });
+            addRenderEnrichmentSource(nextCfg.modResults);
+            return nextCfg;
+        },
+    });
+};
+const addRenderEnrichmentSource = (project) => {
+    const targetKey = project.findTargetKey(WIDGETS_TARGET_NAME);
+    if (!targetKey) {
+        throw new Error(`${WIDGETS_TARGET_NAME} was not found — is expo-widgets in the app config plugins?`);
+    }
+    const swiftPath = node_path_1.default.resolve(__dirname, "../..", "ios", RENDER_ENRICHMENT_FILENAME);
+    const fileReferences = project.pbxFileReferenceSection();
+    const alreadyAdded = Object.keys(fileReferences).some((key) => !key.endsWith("_comment") &&
+        String(fileReferences[key].path).replace(/^"|"$/g, "") === swiftPath);
+    if (alreadyAdded) {
+        return;
+    }
+        // The target already compiles index.swift, so a Sources phase exists —
+        // append to it rather than creating a duplicate phase. Manual pbxproj
+        // surgery because node-xcode's addSourceFile needs a source group this
+        // generated target doesn't have.
+        const target = project.pbxNativeTargetSection()[targetKey];
+        const sourcesPhases = project.hash.project.objects.PBXSourcesBuildPhase || {};
+        const sourcesPhase = (target.buildPhases || [])
+            .map((phase) => sourcesPhases[phase.value])
+            .find(Boolean);
+        if (!sourcesPhase) {
+            throw new Error(`${WIDGETS_TARGET_NAME} has no Sources build phase.`);
+        }
+        const fileReferenceUuid = project.generateUuid();
+        fileReferences[fileReferenceUuid] = {
+            isa: "PBXFileReference",
+            fileEncoding: 4,
+            lastKnownFileType: "sourcecode.swift",
+            name: RENDER_ENRICHMENT_FILENAME,
+            path: `"${swiftPath}"`,
+            sourceTree: '"<group>"',
+            includeInIndex: 0,
+        };
+        fileReferences[`${fileReferenceUuid}_comment`] = RENDER_ENRICHMENT_FILENAME;
+        const buildFiles = project.pbxBuildFileSection();
+        const buildFileUuid = project.generateUuid();
+        buildFiles[buildFileUuid] = {
+            isa: "PBXBuildFile",
+            fileRef: fileReferenceUuid,
+            fileRef_comment: RENDER_ENRICHMENT_FILENAME,
+        };
+        buildFiles[`${buildFileUuid}_comment`] = `${RENDER_ENRICHMENT_FILENAME} in Sources`;
+        sourcesPhase.files = sourcesPhase.files || [];
+        sourcesPhase.files.push({
+            value: buildFileUuid,
+            comment: `${RENDER_ENRICHMENT_FILENAME} in Sources`,
+        });
 };
 const withAppGroupsEntitlements = (config) => {
     return (0, config_plugins_1.withEntitlementsPlist)(config, (config) => {

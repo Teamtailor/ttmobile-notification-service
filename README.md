@@ -67,3 +67,36 @@ The system implements end-to-end encryption for push notifications across iOS an
 - Handles key rotation and device token management
 - Provides consistent cross-platform behavior
 - Includes error handling and logging
+## Live Activity Enrichment (iOS)
+
+An ActivityKit push-to-start notification wakes the app in the background "to
+download assets that the Live Activity needs" (Apple). During that wake,
+`LiveActivityEnricher` (started by `LiveActivityEnrichmentAppDelegateSubscriber`
+on every launch, with no JS dependency) enriches push-started Live Activities
+with E2E-encrypted PII entirely natively:
+
+1. Observes `Activity<LiveActivityAttributes>.activities` + `.activityUpdates`.
+   The attributes struct is a shape-identical duplicate of expo-widgets'
+   internal one — ActivityKit matches activities by unqualified type name, the
+   same string the push payload carries in `attributes-type`.
+2. Reads the content-state `props` JSON and extracts `encrypted_data` — a
+   `MobileNotifications::PayloadEncryptor` blob
+   `{encrypted_key, cipher_text, nonce, tag}` (object or JSON string),
+   encrypted against this device's registered public key.
+3. Decrypts via `CryptoUtils.hybridDecrypt` into a JSON object of PII fields,
+   e.g. `{"candidateName": "...", "avatarUrl": "https://..."}`.
+4. Downloads `avatarUrl` into `<app group>/ExpoWidgets/la-avatar-<key>` (the
+   directory expo-widgets shares with the widget extension) and rewrites the
+   field to the local `file://` URL. `<key>` = `props.meetingEventId`.
+5. Stages the enrichment in app-group `UserDefaults` under
+   `__tt_la_enrichment_<key>` — the widget extension merges it into props at
+   render time, so a later APNs channel update that replaces the content-state
+   cannot permanently wipe the enrichment (those updates don't wake the app).
+6. Updates the activity with the enriched props merged in (preserving
+   `staleDate`/`relevanceScore`) to re-render immediately.
+
+The decryption key is `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`: a
+wake between reboot and first unlock leaves the activity un-enriched (the
+widget falls back to its non-PII layout) and the next launch retries.
+
+Debug: `log collect --device`, subsystem = app bundle id, category `LA-enrich`.
